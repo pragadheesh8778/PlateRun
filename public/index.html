@@ -1,0 +1,133 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>PlateRun</title>
+<style>
+:root{--bg:#f4f7f2;--fg:#15251d;--card:#fff;--ac:#1d6b4a;--hi:#f0b429;--mu:#667a6f;--line:#d9e3dc;--bad:#b3261e}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1a14;--fg:#e8f1ea;--card:#17261d;--ac:#4cc38a;--mu:#93a99b;--line:#274034;--bad:#ff8a80}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.5 Georgia,serif;background:var(--bg);color:var(--fg);padding-bottom:140px}
+header{padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;max-width:960px;margin:auto}
+h1{margin:0;font-size:26px;letter-spacing:-.5px}h2{font-size:19px;margin:20px 0 8px}
+#nav{display:flex;gap:6px;flex-wrap:wrap}
+button,select,input{font:inherit;border-radius:6px;border:1px solid var(--ac);padding:7px 12px;background:var(--card);color:var(--fg)}
+button{cursor:pointer}button.on,button.go{background:var(--ac);color:var(--bg)}button:disabled{opacity:.5;cursor:not-allowed}
+:focus-visible{outline:3px solid var(--hi);outline-offset:1px}
+main{padding:0 16px;max-width:960px;margin:auto}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px;margin-bottom:8px}.grid .card{margin:0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.mu{color:var(--mu);font-size:14px}.bad{color:var(--bad)}
+.search{width:100%;margin-bottom:8px}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.chips button{border-radius:99px}.step{display:inline-flex;align-items:center;gap:8px}.step button{padding:2px 10px}
+.login{max-width:380px;margin:24px auto;display:grid;gap:10px}.login input{width:100%}label{display:grid;gap:4px;font-size:14px}
+.trk{display:flex;list-style:none;padding:0;margin:12px 0;gap:4px}.trk li{flex:1;text-align:center;font-size:11px;color:var(--mu)}
+.trk i{display:block;height:6px;border-radius:3px;background:var(--line);margin-bottom:4px}.trk .d{color:var(--fg)}.trk .d i{background:var(--ac)}
+#bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px))}
+#bar>*{max-width:960px;margin:0 auto}.barrow{display:flex;justify-content:space-between;align-items:center}
+.sheet{display:grid;gap:8px;max-height:55vh;overflow:auto;padding-bottom:10px}
+#toasts{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:grid;gap:6px;z-index:9;width:min(92vw,420px)}
+.toast{background:var(--ac);color:var(--bg);padding:10px 14px;border-radius:6px}.toast.bad{background:var(--bad);color:#fff}
+.row>label{flex:1;min-width:120px}.stars{color:var(--hi)}
+</style></head><body>
+<header><h1>PlateRun</h1><nav id="nav"></nav></header><main id="v"></main><div id="bar"></div><div id="toasts" aria-live="polite"></div>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';'),money=n=>'₹'+Number(n).toFixed(2);
+const STEPS=['PLACED','CONFIRMED','PREPARING','OUT_FOR_DELIVERY','DELIVERED'],NEXT={PLACED:'CONFIRMED',CONFIRMED:'PREPARING',PREPARING:'OUT_FOR_DELIVERY',OUT_FOR_DELIVERY:'DELIVERED'},CANCELLABLE=['PLACED','CONFIRMED','PREPARING'],lab=s=>String(s||'').replace(/_/g,' ').toLowerCase();
+const S={user:null,admin:false,tok:'',mode:'in',menu:[],cart:{},rest:null,cat:'All',q:'',tab:'login',cartOpen:false,pay:'UPI',busy:false,timer:null};
+const store=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}};
+try{S.tok=localStorage.getItem('pr_tok')||'';S.user=JSON.parse(localStorage.getItem('pr_user')||'null');S.admin=localStorage.getItem('pr_role')==='admin'}catch(e){}
+if(!S.tok){S.user=null;S.admin=false}
+async function api(u,m,b){
+ const r=await fetch('/api/'+u,{method:m||'GET',headers:{'Content-Type':'application/json',...(S.tok?{Authorization:'Bearer '+S.tok}:{})},body:m&&m!=='GET'?JSON.stringify(b||{}):undefined});
+ let j={};try{j=await r.json()}catch(e){}
+ if(r.status===401&&S.tok){logout();throw new Error('Session expired. Please sign in again.')}
+ if(!r.ok)throw new Error(j.error||'Request failed ('+r.status+')');return j}
+function toast(m,bad){const t=document.createElement('div');t.className='toast'+(bad?' bad':'');t.textContent=m;$('#toasts').append(t);setTimeout(()=>t.remove(),3500)}
+const run=async f=>{try{return await f()}catch(e){toast(e.message,1)}};
+const loadMenu=async()=>{S.menu=await api('menu')};
+function head(){let h='';if(S.admin)h='<button data-t="admin" class="on">Dashboard</button>';
+ else if(S.user)h=['menu','orders'].map(t=>`<button data-t="${t}" class="${S.tab===t?'on':''}">${t==='menu'?'Menu':'My orders'}</button>`).join('');
+ $('#nav').innerHTML=h+(h?'<button data-o="1">Sign out</button>':'')}
+async function go(t){S.tab=t;clearInterval(S.timer);head();bar();$('#v').innerHTML='<p class="mu">Loading…</p>';
+ const f={login:vLogin,menu:vMenu,orders:vOrders,admin:vAdmin}[t];await run(f);
+ if(t==='orders')S.timer=setInterval(()=>{if(!$('#v :focus'))run(vOrders)},8000)}   // skip refresh while the customer is typing a review
+function logout(){S.user=null;S.admin=false;S.tok='';S.cart={};S.rest=null;S.cartOpen=false;['pr_user','pr_tok','pr_role'].forEach(k=>store(k));go('login')}
+function start(tok,user,role){S.tok=tok;S.user=user;S.admin=role==='admin';store('pr_tok',tok);store('pr_user',user?JSON.stringify(user):null);store('pr_role',role);
+ toast(S.admin?'Signed in as admin':'Welcome, '+user.name);go(S.admin?'admin':'menu')}
+function vLogin(){const up=S.mode==='up';
+ $('#v').innerHTML=`<div class="card login"><h2>${up?'Create account':'Sign in'}</h2>
+ ${up?'<label>Name<input id="rname" autocomplete="name"></label>':''}
+ <label>Email<input id="em" type="email" placeholder="asha@x.com" autocomplete="email"></label>
+ ${up?'<label>Phone (optional)<input id="rphone" type="tel" autocomplete="tel"></label>':''}
+ <label>Password<input id="pw" type="password" placeholder="${up?'At least 6 characters':'Demo accounts use demo123'}" autocomplete="${up?'new-password':'current-password'}"></label>
+ ${up?'<label>Delivery address<input id="raddr" autocomplete="street-address"></label><div class="row"><label>City<input id="rcity" value="Chennai"></label><label>Pincode<input id="rzip" inputmode="numeric" maxlength="6"></label></div>':''}
+ <button class="go" data-${up?'su':'li'}="1">${up?'Create account':'Sign in'}</button>
+ <button data-mode="${up?'in':'up'}">${up?'I already have an account':'New here? Create an account'}</button>
+ ${up?'':`<p class="mu">Demo accounts</p><div class="chips">${['asha','ravi','meena'].map(n=>`<button data-e="${n}@x.com">${n}</button>`).join('')}</div>
+ <hr style="width:100%;border-color:var(--line)"><label>Admin key<input id="ak" type="password" autocomplete="off"></label><button data-al="1">Admin sign in</button>`}</div>`}
+async function login(email,password){const r=await api('login','POST',{email,password});start(r.token,r.user,'customer')}
+async function signup(){const v=id=>$('#'+id).value;
+ const r=await api('register','POST',{name:v('rname'),email:v('em'),phone:v('rphone'),password:v('pw'),line1:v('raddr'),city:v('rcity'),pincode:v('rzip')});start(r.token,r.user,'customer')}
+async function vMenu(){if(!S.menu.length)await loadMenu();if(S.tab!=='menu')return;
+ const cats=['All',...new Set(S.menu.map(m=>m.category))];
+ $('#v').innerHTML=`<input id="sq" class="search" type="search" placeholder="Search dishes or restaurants" value="${esc(S.q)}" aria-label="Search">
+ <div class="chips">${cats.map(c=>`<button class="${c===S.cat?'on':''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div><div id="res"></div>`;res()}
+const card=m=>{const q=S.cart[m.item_id]||0;return `<div class="card"><b>${esc(m.name)}</b><div class="mu">${esc(m.category)} · ${m.stock>0?m.stock+' left':'Sold out'}</div>
+ <div class="row"><span>${money(m.price)}</span>${q?`<span class="step"><button data-m="${m.item_id}" aria-label="Remove one">−</button><b>${q}</b><button data-p="${m.item_id}" aria-label="Add one">+</button></span>`:`<button class="go" data-p="${m.item_id}"${m.stock>0?'':' disabled'}>Add</button>`}</div></div>`};
+function res(){const el=$('#res');if(!el)return;const k=S.q.toLowerCase();
+ const f=S.menu.filter(m=>(S.cat==='All'||m.category===S.cat)&&(m.name+' '+m.restaurant).toLowerCase().includes(k));
+ const rs=[...new Map(f.map(m=>[m.restaurant_id,m])).values()];
+ el.innerHTML=rs.length?rs.map(r=>`<h2>${esc(r.restaurant)} <span class="mu">★ ${Number(r.rating).toFixed(1)}${r.reviews?' · '+r.reviews+' review'+(r.reviews>1?'s':''):''}</span></h2><div class="grid">${f.filter(m=>m.restaurant_id===r.restaurant_id).map(card).join('')}</div>`).join(''):'<p class="mu">No dishes match. Try another search or category.</p>'}
+function add(id,d){const m=S.menu.find(x=>x.item_id===id);if(!m)return;
+ if(d>0&&S.rest&&S.rest!==m.restaurant_id){S.cart={};toast('Cart switched to '+m.restaurant)}
+ const q=(S.cart[id]||0)+d;if(d>0&&q>m.stock){toast('Only '+m.stock+' left',1);return}if(d>0&&q>20){toast('Max 20 per dish',1);return}
+ if(q<=0)delete S.cart[id];else S.cart[id]=q;
+ S.rest=Object.keys(S.cart).length?m.restaurant_id:null;if(!S.rest)S.cartOpen=false;res();bar()}
+function bar(){const el=$('#bar'),lines=Object.entries(S.cart).map(([id,q])=>({m:S.menu.find(x=>x.item_id==id),q})).filter(l=>l.m);
+ if(!lines.length||S.tab!=='menu'){el.innerHTML='';el.style.display='none';return}el.style.display='block';
+ const n=lines.reduce((a,l)=>a+l.q,0),tot=lines.reduce((s,l)=>s+l.q*l.m.price,0);
+ el.innerHTML=(S.cartOpen?`<div class="sheet"><h2>Your cart · ${esc(lines[0].m.restaurant)}</h2>${lines.map(l=>`<div class="row"><span>${esc(l.m.name)}</span>
+ <span class="step"><button data-m="${l.m.item_id}" aria-label="Remove one">−</button><b>${l.q}</b><button data-p="${l.m.item_id}" aria-label="Add one">+</button></span><span>${money(l.q*l.m.price)}</span></div>`).join('')}
+ <label>Payment method<select id="py">${[['UPI','UPI'],['CARD','Card'],['COD','Cash on delivery']].map(([v,t])=>`<option value="${v}"${v===S.pay?' selected':''}>${t}</option>`).join('')}</select></label>
+ <div class="row"><button class="go" data-pl="1"${S.busy?' disabled':''}>${S.busy?'Placing…':'Place order · '+money(tot)}</button><button data-cl="1">Clear cart</button></div></div>`:'')
+ +`<div class="barrow"><span>${n} item${n>1?'s':''} · ${money(tot)}</span><button class="go" data-cart="1">${S.cartOpen?'Hide cart':'View cart'}</button></div>`}
+async function place(){S.busy=true;bar();
+ try{const o=await api('orders','POST',{restaurant_id:S.rest,method:S.pay,items:Object.entries(S.cart).map(([i,q])=>({item_id:+i,qty:q}))});
+  S.cart={};S.rest=null;S.cartOpen=false;S.busy=false;toast('Order #'+o.order_id+' placed · '+money(o.total));await loadMenu();go('orders')}
+ catch(e){S.busy=false;toast(e.message,1);await run(loadMenu);res();bar()}}
+const track=s=>s==='CANCELLED'?'<p class="bad">Cancelled</p>':`<ol class="trk">${STEPS.map((t,i)=>`<li class="${i<=STEPS.indexOf(s)?'d':''}"><i></i>${lab(t)}</li>`).join('')}</ol>`;
+const payTxt=x=>x.method?`${x.method==='COD'?'Cash on delivery':x.method} · payment ${lab(x.payment_status)}`:'';
+const rate=x=>x.status!=='DELIVERED'?'':x.stars?`<p class="mu">You rated this <span class="stars">${'★'.repeat(x.stars)}${'☆'.repeat(5-x.stars)}</span></p>`
+ :`<div class="row"><select id="rs${x.order_id}" aria-label="Rating">${[5,4,3,2,1].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select><input id="rc${x.order_id}" placeholder="Comment (optional)" maxlength="300" style="flex:1;min-width:140px"><button class="go" data-rv="${x.order_id}">Rate</button></div>`;
+async function vOrders(){const o=await api('orders');if(S.tab!=='orders')return;
+ $('#v').innerHTML=o.length?o.map(x=>`<div class="card"><div class="row"><b>Order #${x.order_id}</b><span>${money(x.total)}</span></div>
+ <div class="mu">${esc(x.restaurant)}${x.agent?' · Rider '+esc(x.agent):''}</div><div class="mu">${esc(payTxt(x))}</div>${track(x.status)}
+ ${CANCELLABLE.includes(x.status)?`<button data-x="${x.order_id}">Cancel order</button>`:''}${rate(x)}</div>`).join(''):'<div class="card"><p>No orders yet.</p><button class="go" data-t="menu">Browse the menu</button></div>'}
+async function vAdmin(){const[o,m,r]=await Promise.all([api('orders'),api('menu'),api('reports')]);S.menu=m;if(S.tab!=='admin')return;
+ $('#v').innerHTML=`<h2>Revenue <span class="mu">as of the last end-of-day run</span></h2>${r.sales.map(s=>`<div class="card row"><span>${esc(s.name)} <span class="mu">${s.orders} orders</span></span><b>${money(s.revenue)}</b></div>`).join('')}
+ <h2>Last 7 days</h2>${r.daily.length?r.daily.map(d=>`<div class="card row"><span>${esc(d.day)} <span class="mu">${d.orders} orders</span></span><b>${money(d.revenue)}</b></div>`).join(''):'<p class="mu">No orders in the last 7 days.</p>'}
+ ${r.topItems.length?`<h2>Top dishes</h2><p class="mu">${r.topItems.map(t=>esc(t.name)+' ('+t.sold+')').join(' · ')}</p>`:''}
+ <h2>Restock</h2><div class="card row"><select id="ri" aria-label="Dish">${m.map(i=>`<option value="${i.item_id}">${esc(i.name)} (${i.stock})</option>`).join('')}</select>
+ <input id="rq" type="number" min="1" value="10" aria-label="Quantity" style="width:90px"><button class="go" data-rs="1">Restock</button></div>
+ ${r.lowStock.length?`<p class="mu">Low stock: ${r.lowStock.map(i=>esc(i.name)+' ('+i.stock+')').join(', ')}</p>`:''}
+ <h2>Recent orders</h2>${o.map(x=>`<div class="card"><div class="row"><b>#${x.order_id} · ${esc(x.customer)}</b><span class="mu">${lab(x.status)}</span></div>
+ <div class="mu">${esc(x.restaurant)} · ${money(x.total)} · ${esc(payTxt(x))}</div><div class="row">${NEXT[x.status]?`<button class="go" data-ad="${x.order_id}" data-s="${NEXT[x.status]}">Mark ${lab(NEXT[x.status])}</button>`:'<span></span>'}
+ ${CANCELLABLE.includes(x.status)?`<button data-ac="${x.order_id}">Cancel</button>`:''}</div></div>`).join('')}
+ <h2>Status history</h2>${r.audit.length?r.audit.map(a=>`<div class="mu">${esc(a.at)} · #${a.order_id}: ${lab(a.old_status)} → ${lab(a.new_status)}</div>`).join(''):'<p class="mu">No changes yet.</p>'}
+ <p><button data-eod="1">Run end-of-day settlement</button></p>`}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const d=b.dataset;
+ if(d.t)go(d.t);else if(d.o)logout();else if(d.p)add(+d.p,1);else if(d.m)add(+d.m,-1);
+ else if(d.mode){S.mode=d.mode;vLogin()}
+ else if(d.c){S.cat=d.c;run(vMenu)}else if(d.cart){S.cartOpen=!S.cartOpen;bar()}else if(d.cl){S.cart={};S.rest=null;S.cartOpen=false;res();bar()}
+ else if(d.e)run(()=>login(d.e,'demo123'));else if(d.li)run(()=>login($('#em').value,$('#pw').value));else if(d.su)run(signup);
+ else if(d.al)run(async()=>{const r=await api('admin/login','POST',{key:$('#ak').value.trim()});start(r.token,null,'admin')});
+ else if(d.pl)place();
+ else if(d.x){if(confirm('Cancel this order?'))run(async()=>{await api('orders/'+d.x+'/status','PATCH',{status:'CANCELLED'});toast('Order cancelled');await loadMenu();await vOrders()})}
+ else if(d.rv)run(async()=>{await api('orders/'+d.rv+'/review','POST',{stars:$('#rs'+d.rv).value,comment:$('#rc'+d.rv).value});toast('Thanks for your review');await loadMenu();await vOrders()});
+ else if(d.ad)run(async()=>{await api('orders/'+d.ad+'/status','PATCH',{status:d.s});toast('Order #'+d.ad+' updated');await vAdmin()});
+ else if(d.ac){if(confirm('Cancel order #'+d.ac+'?'))run(async()=>{await api('orders/'+d.ac+'/status','PATCH',{status:'CANCELLED'});toast('Order #'+d.ac+' cancelled');await vAdmin()})}
+ else if(d.rs)run(async()=>{await api('admin/restock','POST',{item_id:$('#ri').value,qty:$('#rq').value});toast('Stock updated');await vAdmin()});
+ else if(d.eod)run(async()=>{const r=await api('admin/eod','POST');toast('Settlement done for '+r.length+' restaurants');await vAdmin()})});
+document.addEventListener('input',e=>{if(e.target.id==='sq'){S.q=e.target.value;res()}});
+document.addEventListener('change',e=>{if(e.target.id==='py')S.pay=e.target.value});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&S.mode==='in'&&['em','pw'].includes(e.target.id))run(()=>login($('#em').value,$('#pw').value))});
+go(S.admin?'admin':S.user?'menu':'login');
+</script></body></html>
